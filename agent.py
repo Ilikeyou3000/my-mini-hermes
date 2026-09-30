@@ -1,4 +1,4 @@
-"""核心 Agent 循环(第 3 章)。
+"""核心 Agent 循环与学习闭环(第 3、13 章)。
 
 循环做的事只有一件:
     调 LLM -> 解析 tool_calls -> 执行工具 -> 结果回灌 -> 重复
@@ -10,12 +10,15 @@
 
 from __future__ import annotations
 
+import logging
+import threading
 from typing import Any, Callable
 
 from prompt_builder import PromptBuilder
 from prompt_caching import apply_prompt_caching
 from tool_calling import ToolCall, strategy_for_model
 
+logger = logging.getLogger(__name__)
 MAX_TOOL_RESULT_CHARS = 50_000
 
 
@@ -49,11 +52,36 @@ class Agent:
         # 系统提示词一次性冻结:整个 session 不再重建(为 prompt caching 铺路)
         self.system_prompt = system_prompt
         self.messages: list[dict] = [{"role": "system", "content": system_prompt}]
+        self._memory_nudge_interval = 5
+        self._skill_nudge_interval = 8
+        self._turns_since_memory = 0
+        self._iters_since_skill = 0
+        self._user_turn_count = 0
+        self._compressor = None
+
+    def configure_learning(self, memory_nudge: int = 5, skill_nudge: int = 8) -> None:
+        """配置复盘间隔；0 或负值禁用对应触发器。"""
+        self._memory_nudge_interval = memory_nudge
+        self._skill_nudge_interval = skill_nudge
+
+    def set_compressor(self, compressor) -> None:
+        """注入上下文压缩器；传入 None 禁用压缩。"""
+        self._compressor = compressor
 
     # ------------------------------------------------------------------ #
     # 对外入口
     # ------------------------------------------------------------------ #
     def run(self, user_input: str) -> str:
+        self._user_turn_count += 1
+        self._turns_since_memory += 1
+
+        # 记忆提醒在本轮开始前锁定，不被当轮主动保存取消。
+        review_memory = (
+            self._memory_nudge_interval > 0
+            and self._turns_since_memory >= self._memory_nudge_interval
+        )
+        if review_memory:
+            self._turns_since_memory = 0
         self.messages.append({"role": "user", "content": user_input})
 
         for i in range(self.max_iterations):
@@ -63,14 +91,31 @@ class Agent:
             self.messages.append(self._strategy.build_assistant_msg(content, tool_calls))
 
             if not tool_calls:
-                return content
+                break
 
+            # 按有工具调用的迭代计数，而不是按单个工具计数。
+            self._iters_since_skill += 1
             self._log(f"[iter {i + 1}] {len(tool_calls)} tool call(s)")
             for tc in tool_calls:
+                if tc.name == "memory":
+                    self._turns_since_memory = 0
+                elif tc.name == "skill_manage":
+                    self._iters_since_skill = 0
                 result = self._execute_tool(tc)
                 self.messages.append(self._strategy.build_tool_result_msg(tc, result))
+        else:
+            content = "[Max iterations reached]"
 
-        return "[Max iterations reached]"
+        # 技能提醒在本轮结束后判断，主动管理技能会重置计数。
+        review_skills = (
+            self._skill_nudge_interval > 0
+            and self._iters_since_skill >= self._skill_nudge_interval
+        )
+        if review_skills:
+            self._iters_since_skill = 0
+        if review_memory or review_skills:
+            self._spawn_background_review(review_memory, review_skills)
+        return content
 
     def set_model(self, model: str) -> None:
         """切换模型时必须同步切换策略(CLI 的 /model 命令会用到)。"""
@@ -81,6 +126,15 @@ class Agent:
     # 内部
     # ------------------------------------------------------------------ #
     def _call_llm(self):
+        if self._compressor is not None:
+            estimated = self._compressor._estimate_tokens(self.messages)
+            threshold = self._compressor.max_context_tokens * self._compressor.THRESHOLD
+            if estimated >= threshold:
+                from compression import flush_memories
+
+                flush_memories(self, self.messages)
+                self.messages = self._compressor.maybe_compress(self.messages)
+
         # 缓存标记只加在"发出去的那份副本"上,self.messages 始终保持干净
         messages = (
             apply_prompt_caching(self.messages, cache_ttl=self.cache_ttl)
@@ -112,6 +166,59 @@ class Agent:
             text = text[:MAX_TOOL_RESULT_CHARS] + "\n...[truncated]"
         self._log(f"  <- {text[:120]}")
         return text
+
+    _MEMORY_REVIEW = (
+        "Review the conversation above. Has the user revealed preferences, "
+        "habits, or personal details worth remembering? Has the user expressed "
+        "expectations about how you should behave? If so, save using the "
+        "memory tool. If nothing is worth saving, say 'Nothing to save.' and stop."
+    )
+    _SKILL_REVIEW = (
+        "Review the conversation above. Was a non-trivial approach used that "
+        "required trial and error or course corrections? If a relevant skill "
+        "exists, update it. Otherwise, create a new one if reusable. If nothing "
+        "is worth saving, say 'Nothing to save.' and stop."
+    )
+    _COMBINED_REVIEW = (
+        "Review the conversation above.\n\n"
+        "**Memory**: User preferences, habits, corrections? Save with memory tool.\n\n"
+        "**Skills**: Non-trivial approach worth reusing? Create or update a skill.\n\n"
+        "Only act if genuinely worth saving. Say 'Nothing to save.' if not."
+    )
+
+    def _spawn_background_review(self, review_memory: bool, review_skills: bool):
+        """按参考实现浅拷贝消息，在后台线程内部创建复盘 Agent。"""
+        if review_memory and review_skills:
+            prompt = self._COMBINED_REVIEW
+        elif review_memory:
+            prompt = self._MEMORY_REVIEW
+        else:
+            prompt = self._SKILL_REVIEW
+
+        messages_snapshot = [m.copy() for m in self.messages]
+
+        def _run():
+            try:
+                review_agent = Agent(
+                    client=self.client,
+                    model=self.model,
+                    system_prompt=self.system_prompt,
+                    tools=self.tools,
+                    max_iterations=6,
+                    max_tokens=self.max_tokens,
+                )
+                review_agent.tool_handlers = self.tool_handlers
+                review_agent._memory_nudge_interval = 0
+                review_agent._skill_nudge_interval = 0
+                review_agent.messages = messages_snapshot
+                review_agent.run(prompt)
+            except Exception as e:
+                logger.debug("Background review failed: %s", e)
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        logger.info("Background review spawned (memory=%s, skills=%s)",
+                    review_memory, review_skills)
 
     def _log(self, line: str) -> None:
         if self.verbose:
