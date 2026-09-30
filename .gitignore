@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 打包 / 分发
+build/
+dist/
+*.egg-info/
+
+# 测试与覆盖率
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 环境变量与密钥
+.env
+.env.*
+
+# 本地数据库（后续章节 SQLite 会话记忆）
+*.db
+*.sqlite3
+*.db-wal
+*.db-shm
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/
