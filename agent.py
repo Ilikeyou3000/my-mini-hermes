@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from prompt_builder import PromptBuilder
 from tool_calling import ToolCall, strategy_for_model
 
 MAX_TOOL_RESULT_CHARS = 50_000
@@ -104,14 +105,6 @@ class Agent:
             print(f"\033[90m{line}\033[0m")
 
 
-DEFAULT_SYSTEM_PROMPT = """You are a helpful AI assistant with tool access.
-
-## Tool Use
-Take action. Don't just describe what you would do - actually do it.
-If the user asks you to compute something, call the tool.
-When you have the answer, reply with plain text and no tool calls."""
-
-
 def build_default_agent(verbose: bool = True) -> Agent:
     """从环境变量拉配置,连真实 LLM。需要 OPENAI_API_KEY / OPENAI_BASE_URL。"""
     import os
@@ -124,14 +117,25 @@ def build_default_agent(verbose: bool = True) -> Agent:
         api_key=os.environ.get("OPENAI_API_KEY", "dummy"),
         base_url=os.environ.get("OPENAI_BASE_URL") or None,
     )
-    return Agent(
+
+    # 系统提示词在 session 启动时组装一次并冻结(第 5 章)。
+    # 记忆/技能索引要等第 8、10 章才有真实来源,这里先只放项目上下文。
+    builder = PromptBuilder()
+    system_prompt = builder.get_system_prompt(
+        user_context=os.environ.get("MINI_HERMES_CONTEXT", ""),
+    )
+
+    agent = Agent(
         client=client,
         model=os.environ.get("MINI_HERMES_MODEL", "gpt-4o-mini"),
-        system_prompt=DEFAULT_SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         tools=registry.get_schemas(),
         tool_handlers=registry.get_handlers(),
         verbose=verbose,
     )
+    # 压缩事件(第 14 章)需要 invalidate 后重建,所以把 builder 挂在 agent 上
+    agent.prompt_builder = builder
+    return agent
 
 
 if __name__ == "__main__":
