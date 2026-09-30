@@ -58,6 +58,9 @@ class Agent:
         self._iters_since_skill = 0
         self._user_turn_count = 0
         self._compressor = None
+        # CLI 注入；后台复盘子 Agent 不继承会话，避免内部提示落库。
+        self.session_db = None
+        self.session_id: str | None = None
 
     def configure_learning(self, memory_nudge: int = 5, skill_nudge: int = 8) -> None:
         """配置复盘间隔；0 或负值禁用对应触发器。"""
@@ -83,6 +86,7 @@ class Agent:
         if review_memory:
             self._turns_since_memory = 0
         self.messages.append({"role": "user", "content": user_input})
+        self._persist_message("user", user_input)
 
         for i in range(self.max_iterations):
             msg = self._call_llm()
@@ -91,6 +95,7 @@ class Agent:
             self.messages.append(self._strategy.build_assistant_msg(content, tool_calls))
 
             if not tool_calls:
+                self._persist_message("assistant", content)
                 break
 
             # 按有工具调用的迭代计数，而不是按单个工具计数。
@@ -103,6 +108,7 @@ class Agent:
                     self._iters_since_skill = 0
                 result = self._execute_tool(tc)
                 self.messages.append(self._strategy.build_tool_result_msg(tc, result))
+                self._persist_message("tool", result, tool_name=tc.name, tool_call_id=tc.id)
         else:
             content = "[Max iterations reached]"
 
@@ -166,6 +172,20 @@ class Agent:
             text = text[:MAX_TOOL_RESULT_CHARS] + "\n...[truncated]"
         self._log(f"  <- {text[:120]}")
         return text
+
+    def _persist_message(
+        self, role: str, content: str, tool_name: str | None = None,
+        tool_call_id: str | None = None,
+    ) -> None:
+        """按参考保存用户、最终回复和工具结果；写库失败不打断对话。"""
+        if self.session_db and self.session_id:
+            try:
+                self.session_db.append_message(
+                    self.session_id, role, content,
+                    tool_name=tool_name, tool_call_id=tool_call_id,
+                )
+            except Exception:
+                pass
 
     _MEMORY_REVIEW = (
         "Review the conversation above. Has the user revealed preferences, "

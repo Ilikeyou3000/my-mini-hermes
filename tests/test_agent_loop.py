@@ -135,6 +135,57 @@ def test_set_model_switches_strategy():
     assert isinstance(agent._strategy, TextStrategy)
 
 
+def test_session_persists_user_final_answer_and_tool_result():
+    from memory.session_db import SessionDB
+
+    db = SessionDB()
+    try:
+        agent = make_agent(FakeClient([
+            structured_msg(calls=[("calc", {"expression": "2+3"})]),
+            structured_msg(content="5"),
+        ]))
+        agent.session_db = db
+        agent.session_id = db.create_session()
+        assert agent.run("calculate") == "5"
+        rows = db.get_session_messages(agent.session_id)
+        assert [row["role"] for row in rows] == ["user", "tool", "assistant"]
+        assert [row["content"] for row in rows] == ["calculate", "5", "5"]
+        assert rows[1]["tool_name"] == "calc"
+        assert rows[1]["tool_call_id"] == "call_0"
+    finally:
+        db.close()
+
+
+def test_text_tool_result_is_persisted_as_tool_not_user():
+    from memory.session_db import SessionDB
+
+    db = SessionDB()
+    try:
+        agent = make_agent(FakeClient([
+            text_msg("call:calc{expression: '7*6'}"), text_msg("42"),
+        ]), model="llama-3.1-8b")
+        agent.session_db = db
+        agent.session_id = db.create_session()
+        assert agent.run("calculate") == "42"
+        rows = db.get_session_messages(agent.session_id)
+        assert rows[1]["role"] == "tool"
+        assert rows[1]["content"] == "42"
+        assert rows[1]["tool_name"] == "calc"
+    finally:
+        db.close()
+
+
+def test_persistence_error_does_not_break_loop():
+    from unittest.mock import Mock
+
+    agent = make_agent(FakeClient([structured_msg(content="ok")]))
+    agent.session_db = Mock()
+    agent.session_db.append_message.side_effect = RuntimeError("disk full")
+    agent.session_id = "test-session"
+    assert agent.run("hello") == "ok"
+    assert agent.session_db.append_message.call_count == 2
+
+
 # --------------------------------------------------------------------------- #
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):

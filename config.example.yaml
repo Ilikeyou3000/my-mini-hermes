@@ -1,0 +1,16 @@
+# 复制为 config.yaml，再填写本地服务地址和模型名称。
+model:
+  api_key: "lm-studio"
+  base_url: "http://localhost:1234/v1"
+  model: "qwen3.5-35b-a3b"
+  max_tokens: 400
+
+# 召回摘要复用主模型，只单独控制输出长度。
+aux_model:
+  max_tokens: 300
+
+learning:
+  memory_nudge_interval: 5
+  skill_nudge_interval: 8
+agent:
+  max_iterations: 15
