@@ -20,6 +20,7 @@ from tool_registry import registry
 # 导入时注册本地已经实现的工具。
 import skills.manager
 import tools.memory_tool
+import tools.script_tool
 
 
 def main():

@@ -1,6 +1,8 @@
 """CLI 离线集成测试：python3 tests/test_cli.py。"""
 
 import io
+import json
+import os
 import sqlite3
 import sys
 import tempfile
@@ -80,7 +82,7 @@ class CLITests(unittest.TestCase):
         self.assertEqual(self.agent._skill_nudge_interval, 0)
         self.assertEqual(self.agent._compressor.max_context_tokens, 32000)
         self.assertEqual(self.agent._compressor.max_tokens, 400)
-        self.assertTrue({"memory", "skills_list", "skill_view", "skill_manage"}.issubset(
+        self.assertTrue({"memory", "skills_list", "skill_view", "skill_manage", "skill_run"}.issubset(
             self.agent.tool_handlers,
         ))
         recall = cli.tools.memory_tool._session_recall
@@ -89,6 +91,38 @@ class CLITests(unittest.TestCase):
         self.assertEqual([row["role"] for row in self.saved_rows()], ["system", "user", "assistant"])
         with self.assertRaises(sqlite3.ProgrammingError):
             self.agent.session_db.conn.execute("SELECT 1")
+
+    @unittest.skipUnless(os.name == "posix", "script execution requires POSIX")
+    def test_agent_runs_skill_script_and_persists_result(self):
+        skill_dir = self.root / "data" / "skills" / "demo"
+        (skill_dir / "scripts").mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: demo\ndescription: offline script example\n---\nRun scripts/echo.py.\n",
+            encoding="utf-8",
+        )
+        (skill_dir / "scripts" / "echo.py").write_text(
+            "import sys\nprint(sys.argv[1])\n", encoding="utf-8",
+        )
+        self.client._queue = [
+            structured_msg(calls=[("skill_run", {
+                "name": "demo", "file_path": "scripts/echo.py", "args": ["离线执行成功"],
+            })]),
+            structured_msg(content="脚本已完成"),
+        ]
+        output = self.run_cli(["运行 demo 技能", "exit"])
+        self.assertIn("脚本已完成", output)
+        self.assertIn("demo", self.agent.system_prompt)
+        schemas = self.client.calls[0]["tools"]
+        self.assertIn("skill_run", [schema["function"]["name"] for schema in schemas])
+        rows = self.saved_rows()
+        self.assertEqual([row["role"] for row in rows],
+                         ["system", "user", "tool", "assistant"])
+        result = json.loads(rows[2]["content"])
+        self.assertTrue(result["success"])
+        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(result["stdout"].strip(), "离线执行成功")
+        tool_messages = [msg for msg in self.client.calls[1]["messages"] if msg["role"] == "tool"]
+        self.assertEqual(json.loads(tool_messages[0]["content"]), result)
 
     def test_memory_and_skills_commands(self):
         persistent = cli.PersistentMemory(self.root / "data")
