@@ -123,17 +123,22 @@ class PersistentMemory:
         # 提醒调用方:冻结快照只在下次 session 生效,别指望本轮系统提示词变化
         return True
 
-    def update_user_profile(self, text: str) -> None:
+    def update_user_profile(self, text: str) -> bool:
         """整体替换用户画像(画像是一份"当前结论",不是流水账)。
 
         传空串等于清空画像。超过上限直接截断,不淘汰旧内容 ——
         画像是被反复重写的,不存在"最旧一条"的概念。
+
+        返回是否发生了截断:调用方(ch10 的 memory 工具)要把这件事回传给
+        模型,否则模型会以为整段画像都存下来了。
         """
         cleaned = self._normalize_block(text)
-        if len(cleaned) > self.USER_LIMIT:
+        truncated = len(cleaned) > self.USER_LIMIT
+        if truncated:
             cleaned = cleaned[: self.USER_LIMIT].rstrip()
         with self._lock:
             self._write_text(self.user_path, cleaned)
+        return truncated
 
     def clear(self) -> None:
         """清空两份记忆(调试和"从零开始"时用)。"""
