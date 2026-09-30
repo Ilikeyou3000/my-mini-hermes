@@ -10,6 +10,7 @@
 """
 
 from .persistent import PersistentMemory
+from .recall import SessionRecall
 from .session_db import SessionDB
 
-__all__ = ["PersistentMemory", "SessionDB"]
+__all__ = ["PersistentMemory", "SessionRecall", "SessionDB"]
