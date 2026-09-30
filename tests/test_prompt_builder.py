@@ -161,7 +161,6 @@ def test_agent_system_message_never_changes():
     """接入 Agent 后,多轮对话里 system 消息必须逐字节不变。"""
     builder = PromptBuilder()
     system_prompt = builder.get_system_prompt(memory_block=MEM, skills_index=SKILLS)
-    print(system_prompt)
     client = FakeClient([
         structured_msg(calls=[("calc", {"expression": "1+1"})]),
         structured_msg(content="2"),

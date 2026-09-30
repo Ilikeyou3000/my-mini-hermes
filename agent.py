@@ -124,6 +124,7 @@ def build_default_agent(verbose: bool = True) -> Agent:
 
     from openai import OpenAI  # 延迟导入,离线 demo 不依赖它
 
+    from memory import PersistentMemory
     from tool_registry import registry
 
     client = OpenAI(
@@ -131,10 +132,15 @@ def build_default_agent(verbose: bool = True) -> Agent:
         base_url=os.environ.get("OPENAI_BASE_URL") or None,
     )
 
+    # 持久记忆(第 8 章):启动时读一次,之后是冻结快照的一部分。
+    # session 中途写进 MEMORY.md 的新记忆只落盘,不回灌本轮提示词。
+    memory = PersistentMemory(os.environ.get("MINI_HERMES_DATA_DIR", "data"))
+
     # 系统提示词在 session 启动时组装一次并冻结(第 5 章)。
-    # 记忆/技能索引要等第 8、10 章才有真实来源,这里先只放项目上下文。
+    # 技能索引要等第 10 章才有真实来源,这里先留空。
     builder = PromptBuilder()
     system_prompt = builder.get_system_prompt(
+        memory_block=memory.load(),
         user_context=os.environ.get("MINI_HERMES_CONTEXT", ""),
     )
 
@@ -150,6 +156,8 @@ def build_default_agent(verbose: bool = True) -> Agent:
     )
     # 压缩事件(第 14 章)需要 invalidate 后重建,所以把 builder 挂在 agent 上
     agent.prompt_builder = builder
+    # 记忆写入工具(第 10 章的 memory_tool)和后台复盘线程(第 13 章)都要用它
+    agent.memory = memory
     return agent
 
 
