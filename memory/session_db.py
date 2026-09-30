@@ -394,7 +394,7 @@ def _content_to_text(msg: dict[str, Any]) -> str:
     return "\n".join(p for p in parts if p)
 
 
-if __name__ == "__main__":  # 手动 demo:python3 session_db.py
+if __name__ == "__main__":  # 手动 demo:python3 memory/session_db.py
     db = SessionDB(":memory:")
     sid = db.create_session(source="demo")
     db.append_message(sid, "user", "how do I enable WAL mode in sqlite?")

@@ -29,6 +29,11 @@ htmlcov/
 *.db-wal
 *.db-shm
 
+# 运行时数据目录：只保留结构，不跟踪内容
+# （data/MEMORY.md、USER.md、skills/ 都是 agent 自己写的私有记忆）
+data/*
+!data/.gitkeep
+
 # 编辑器 / 系统
 .DS_Store
 .idea/

@@ -28,7 +28,7 @@ for _p in (str(ROOT), str(ROOT / "tests")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from session_db import SessionDB  # noqa: E402
+from memory.session_db import SessionDB  # noqa: E402
 
 
 def _db(**kwargs) -> SessionDB:
