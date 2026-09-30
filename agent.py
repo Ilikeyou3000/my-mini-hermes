@@ -13,6 +13,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from prompt_builder import PromptBuilder
+from prompt_caching import apply_prompt_caching
 from tool_calling import ToolCall, strategy_for_model
 
 MAX_TOOL_RESULT_CHARS = 50_000
@@ -29,6 +30,8 @@ class Agent:
         max_iterations: int = 15,
         max_tokens: int = 1024,
         verbose: bool = False,
+        enable_prompt_caching: bool = False,
+        cache_ttl: str | None = "5m",
     ):
         self.client = client
         self.model = model
@@ -37,6 +40,10 @@ class Agent:
         self.max_iterations = max_iterations
         self.max_tokens = max_tokens
         self.verbose = verbose
+        # 默认关闭:cache_control 是 Anthropic 的字段,
+        # 纯 OpenAI 接口收到未知字段会直接报错(第 6 章)
+        self.enable_prompt_caching = enable_prompt_caching
+        self.cache_ttl = cache_ttl
 
         self._strategy = strategy_for_model(model)
         # 系统提示词一次性冻结:整个 session 不再重建(为 prompt caching 铺路)
@@ -74,9 +81,15 @@ class Agent:
     # 内部
     # ------------------------------------------------------------------ #
     def _call_llm(self):
+        # 缓存标记只加在"发出去的那份副本"上,self.messages 始终保持干净
+        messages = (
+            apply_prompt_caching(self.messages, cache_ttl=self.cache_ttl)
+            if self.enable_prompt_caching
+            else self.messages
+        )
         kwargs: dict[str, Any] = {
             "model": self.model,
-            "messages": self.messages,
+            "messages": messages,
             "max_tokens": self.max_tokens,
         }
         kwargs = self._strategy.prepare_kwargs(kwargs, self.tools)
@@ -132,6 +145,8 @@ def build_default_agent(verbose: bool = True) -> Agent:
         tools=registry.get_schemas(),
         tool_handlers=registry.get_handlers(),
         verbose=verbose,
+        # 走 Anthropic / 兼容 cache_control 的网关时设 MINI_HERMES_PROMPT_CACHE=1
+        enable_prompt_caching=os.environ.get("MINI_HERMES_PROMPT_CACHE") == "1",
     )
     # 压缩事件(第 14 章)需要 invalidate 后重建,所以把 builder 挂在 agent 上
     agent.prompt_builder = builder
